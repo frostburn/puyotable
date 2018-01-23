@@ -1,5 +1,6 @@
 import argparse
 import json
+from multiprocessing import Pool
 
 from puyotable.deals import canonize_deals
 
@@ -29,6 +30,21 @@ def for_all_deals(num_deals, num_colors, callback, prefix=[]):
             )
 
 
+def unique_deals(num_deals, num_colors, prefix_=[]):
+    canonized = set()
+
+    def callback(deals):
+        canonized.add(canonize_deals(deals, num_colors))
+
+    # Known symmetry reduction
+    prefix = [(0, 0)] + prefix_
+    for_all_deals(num_deals - 1, num_colors, callback, prefix)
+    prefix = [(0, 1)] + prefix_
+    for_all_deals(num_deals - 1, num_colors, callback, prefix)
+
+    return canonized
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='Tabulate all opening sequences in Puyo Puyo.'
@@ -50,14 +66,18 @@ if __name__ == '__main__':
 
     canonized = set()
 
-    def callback(deals):
-        canonized.add(canonize_deals(deals, args.num_colors))
+    if args.depth > 1:
+        prefixes = [[(c0, c1)] for c0 in range(args.num_colors) for c1 in range(args.num_colors)]  # noqa
 
-    # Known symmetry reduction
-    prefix = [(0, 0)]
-    for_all_deals(args.depth - 1, args.num_colors, callback, prefix)
-    prefix = [(0, 1)]
-    for_all_deals(args.depth - 1, args.num_colors, callback, prefix)
+        process_args = [
+            (args.depth - 1, args.num_colors, prefix) for prefix in prefixes
+        ]
+        pool = Pool()
+        subsets = pool.starmap(unique_deals, process_args)
+        for subset in subsets:
+            canonized.update(subset)
+    else:
+        canonized = unique_deals(args.depth, args.num_colors)
 
     print("Found", len(canonized), "unique sequences.")
     if args.outfile:
