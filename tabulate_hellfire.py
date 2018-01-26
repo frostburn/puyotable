@@ -4,19 +4,13 @@ import argparse
 import json
 
 from gym_puyopuyo.state import State
+from gym_puyopuyo.field import TallField
 
-from puyotable.compress import num_encode
-# from puyotable.field import canonize_field
+from puyotable.compress import state_encode, state_decode
+from puyotable.canonization import canonize_state
 from tabulate_deals import unique_deals
 
 import puyocore as core
-
-
-def canonize_field_light(state):
-    data = bytes(state.field.data)
-    state.mirror()
-    mirrored_data = bytes(state.field.data)
-    return min(data, mirrored_data)
 
 
 def tree_search(state, depth, factor=1e-5):
@@ -31,15 +25,20 @@ def tree_search(state, depth, factor=1e-5):
     search_args = [
         state.field.data,
         state.num_layers,
-        state.width,
-        state.tsu_rules,
         state.has_garbage,
         action_mask,
         colors,
         depth,
         factor,
     ]
-    return core.tall_tree_search(*search_args)
+    search_fun = core.bottom_tree_search
+    if isinstance(state.field, TallField):
+        search_args.insert(2, state.tsu_rules)
+        search_args.insert(2, state.width)
+        search_fun = core.tall_tree_search
+
+    return search_fun(*search_args)
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -58,8 +57,12 @@ if __name__ == "__main__":
         help='How many pieces deep to tabulate'
     )
     parser.add_argument(
-        'width', metavar='width', type=int,
+        '--width', metavar='width', type=int, default=6,
         help='How wide a board to use'
+    )
+    parser.add_argument(
+        '--height', metavar='height', type=int, default=13,
+        help='How high a board to use'
     )
     parser.add_argument(
         '--num_deals', metavar='n', type=int, default=3,
@@ -87,43 +90,33 @@ if __name__ == "__main__":
         dealss = unique_deals(deals_depth, args.num_colors)
     print("Processing {} unique sequences".format(len(dealss)))
 
-
-
     values = {}
     for deals in dealss:
-        base_state = State(13, args.width, args.num_colors, deals=deals, tsu_rules=True)
+        base_state = State(args.height, args.width, args.num_colors, deals=deals, tsu_rules=(args.height == 13))
         # base_state.render()
 
-        search_space = set()
         def collect(state):
             if len(state.deals) >= args.num_deals:
                 for child, reward in state.get_children():
                     collect(child)
             else:
-                search_space.add(canonize_field_light(state))
+                canonize_state(state)
+                values[state_encode(state)] = None
 
         collect(base_state)
 
-        print("Collected", len(search_space), "states")
+    print("Collected", len(values), "states")
 
-        print("Doing the searches")
+    print("Doing the searches...")
 
-        state = base_state.clone()
-        state.deals = base_state.deals[args.surface_depth + 1:]
-        for field_data in search_space:
-            state.field.data = bytearray(field_data)
-            score = tree_search(state, args.depth)
-            state.render()
-            print(score)
-            encoded = num_encode(state.field_to_int())
-            prefix = []
-            for deal in state.deals:
-                prefix.extend(deal)
-            prefix = "".join(map(str, prefix))
-            key = "{}{}".format(prefix, encoded)
-            values[key] = score
+    for encoded in values.keys():
+        state = state_decode(base_state, encoded)
+        score = tree_search(state, args.depth)
+        state.render()
+        print(score)
+        values[encoded] = score
 
-        print("Collected", len(values), "values so far")
+    print("Collected", len(values), "values")
 
     if args.outfile:
         data = {
@@ -132,6 +125,7 @@ if __name__ == "__main__":
                 "surface_depth": args.surface_depth,
                 "depth": args.depth,
                 "width": args.width,
+                "height": args.height,
                 "num_deals": args.num_deals,
             },
             "scores": values,

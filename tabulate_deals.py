@@ -2,7 +2,7 @@ import argparse
 import json
 from multiprocessing import Pool
 
-from puyotable.deals import canonize_deals
+from puyotable.canonization import canonize_deals
 
 
 def all_deals(num_deals, num_colors):
