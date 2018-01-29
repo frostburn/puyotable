@@ -2,6 +2,8 @@ from __future__ import division
 
 import argparse
 import json
+from multiprocessing import Pool
+import sys
 
 from gym_puyopuyo.state import State
 from gym_puyopuyo.field import TallField
@@ -11,6 +13,10 @@ from puyotable.canonization import canonize_state
 from tabulate_deals import unique_deals
 
 import puyocore as core
+
+
+def log(*args):
+    print(*args, file=sys.stderr)
 
 
 def tree_search(state, depth, factor=1e-5):
@@ -38,6 +44,30 @@ def tree_search(state, depth, factor=1e-5):
         search_fun = core.tall_tree_search
 
     return search_fun(*search_args)
+
+
+def live_tree_search(encoded, decoded, depth):
+    score = tree_search(decoded, depth)
+    if encoded is not None:
+        print('"{}": {},'.format(encoded, score), flush=True)
+
+
+def save(args, values):
+    if args.outfile:
+        data = {
+            "metadata": {
+                "num_colors": args.num_colors,
+                "surface_depth": args.surface_depth,
+                "depth": args.depth,
+                "width": args.width,
+                "height": args.height,
+                "num_deals": args.num_deals,
+            },
+            "scores": values,
+        }
+        with open(args.outfile, "w") as f:
+            json.dump(data, f)
+        log("Saved result to", args.outfile)
 
 
 if __name__ == "__main__":
@@ -76,60 +106,61 @@ if __name__ == "__main__":
         '--outfile', metavar='f', type=str,
         help='Filename for JSON output'
     )
+    parser.add_argument(
+        '--live', action='store_true',
+        help='Output continuous results'
+    )
 
     args = parser.parse_args()
 
     deals_depth = args.surface_depth + args.num_deals
 
+    log("Recalculating deals")
+    dealss = unique_deals(deals_depth, args.num_colors)
+    log("Processing {} unique sequences".format(len(dealss)))
+
     if args.infile:
-        print("Loading deals from {}".format(args.infile))
+        log("Loading partially calculated data from {}".format(args.infile))
         with open(args.infile) as f:
-            dealss = json.load(f)
+            data = json.load(f)
+            values = data["scores"]
+        base_state = State(args.height, args.width, args.num_colors, deals=[], tsu_rules=(args.height == 13))
     else:
-        print("Recalculating deals")
-        dealss = unique_deals(deals_depth, args.num_colors)
-    print("Processing {} unique sequences".format(len(dealss)))
+        values = {}
+        for deals in dealss:
+            base_state = State(args.height, args.width, args.num_colors, deals=deals, tsu_rules=(args.height == 13))
 
-    values = {}
-    for deals in dealss:
-        base_state = State(args.height, args.width, args.num_colors, deals=deals, tsu_rules=(args.height == 13))
-        # base_state.render()
+            def collect(state):
+                if len(state.deals) >= args.num_deals:
+                    for child, reward in state.get_children():
+                        collect(child)
+                else:
+                    canonize_state(state)
+                    values[state_encode(state)] = None
 
-        def collect(state):
-            if len(state.deals) >= args.num_deals:
-                for child, reward in state.get_children():
-                    collect(child)
-            else:
-                canonize_state(state)
-                values[state_encode(state)] = None
+            collect(base_state)
 
-        collect(base_state)
+    log("Collected", len(values), "states")
 
-    print("Collected", len(values), "states")
+    keys = []
+    for key, value in values.items():
+        if value is None:
+            keys.append(key)
+    keys.sort()
+    log("Doing the search for {} states".format(len(keys)))
 
-    print("Doing the searches...")
-
-    for encoded in values.keys():
+    process_args = []
+    for encoded in keys:
         state = state_decode(base_state, encoded)
-        score = tree_search(state, args.depth)
-        state.render()
-        print(score)
+        process_args.append((encoded if args.live else None, state, args.depth))
+        # state.render(outfile=sys.stderr)
+
+    with Pool(12) as pool:
+        scores = pool.starmap(live_tree_search, process_args)
+
+    for encoded, score in zip(keys, scores):
         values[encoded] = score
 
-    print("Collected", len(values), "values")
+    log("Collected", len(values), "values")
 
-    if args.outfile:
-        data = {
-            "metadata": {
-                "num_colors": args.num_colors,
-                "surface_depth": args.surface_depth,
-                "depth": args.depth,
-                "width": args.width,
-                "height": args.height,
-                "num_deals": args.num_deals,
-            },
-            "scores": values,
-        }
-        with open(args.outfile, "w") as f:
-            json.dump(data, f)
-        print("Saved result to", args.outfile)
+    save(args, values)
